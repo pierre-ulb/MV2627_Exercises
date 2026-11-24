@@ -5,11 +5,10 @@ Ce script ne calcule rien : toutes les grandeurs physiques sont lues dans
 project.ipynb (via load_notebook.py). Il ne fait que dessiner.
 
 Usage (depuis la racine du dépôt) :
-    uv run --with imageio-ffmpeg python Project2627/presentation/make_animations.py
-    uv run --with imageio-ffmpeg python Project2627/presentation/make_animations.py modes
-    uv run --with imageio-ffmpeg python Project2627/presentation/make_animations.py temps --speed 0.5
-  (--with imageio-ffmpeg fournit ffmpeg, nécessaire pour les MP4, sans rien installer
-   sur le système ; --etiquettes ajoute les symboles m1, m2, M0, x01, x02)
+    uv run python Project2627/presentation/make_animations.py
+    uv run python Project2627/presentation/make_animations.py modes
+    uv run python Project2627/presentation/make_animations.py temps --speed 0.5
+  (ffmpeg doit être installé ; --etiquettes ajoute les symboles m1, m2, M0, x01, x02)
 
 Aucun texte n'est écrit sur les animations : les informations sont dans les noms.
 Sorties dans Project2627/presentation/figures/ (chaque dossier est vidé puis régénéré) :
@@ -30,7 +29,6 @@ devant (x_02 = w_road décalé de L).
 """
 
 import argparse
-import shutil
 import unicodedata
 from pathlib import Path
 
@@ -205,22 +203,6 @@ class CarDrawing:
                 *self.wheels, self.body, self.cg, *([self.blab] if self.blab else []), *self.wlab]
 
 
-def find_ffmpeg():
-    """ffmpeg du système s'il existe, sinon celui fourni par le paquet imageio-ffmpeg, sinon None."""
-    exe = shutil.which(plt.rcParams["animation.ffmpeg_path"]) or shutil.which("ffmpeg")
-    if exe is None:
-        try:
-            import imageio_ffmpeg
-            exe = imageio_ffmpeg.get_ffmpeg_exe()
-        except Exception:
-            return None
-    plt.rcParams["animation.ffmpeg_path"] = exe
-    return exe
-
-
-FFMPEG = find_ffmpeg()
-
-
 def slug(text):
     """Texte -> morceau de nom de fichier sans accents ni espaces."""
     t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
@@ -236,13 +218,8 @@ def clean_dir(d):
 
 def _save(anim, path, fps, gif):
     path.parent.mkdir(parents=True, exist_ok=True)
-    if FFMPEG is None:
-        gif = True
-        print("ffmpeg introuvable : export en GIF uniquement "
-              "(lancer avec  uv run --with imageio-ffmpeg ...  pour avoir les MP4)")
-    else:
-        anim.save(path, writer=animation.FFMpegWriter(fps=fps, bitrate=2400))
-        print("écrit :", path)
+    anim.save(path, writer=animation.FFMpegWriter(fps=fps, bitrate=2400))
+    print("écrit :", path)
     if gif:
         g = path.with_suffix(".gif")
         anim.save(g, writer=animation.PillowWriter(fps=fps), dpi=90)
