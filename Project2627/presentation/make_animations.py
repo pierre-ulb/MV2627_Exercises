@@ -68,6 +68,7 @@ WHEEL_W, WHEEL_H = 0.7, 0.4
 Y_BODY = 2.85              # centre de la caisse
 BODY_W, BODY_H = 5.6, 0.7
 AMP = 0.4                  # déplacement maximal dessiné
+PERIOD_ON_SCREEN = 2.0     # durée d'une période à l'écran pour les animations harmoniques [s]
 LABELS = False             # aucun texte sur les animations (option --etiquettes pour les symboles)
 
 
@@ -216,6 +217,50 @@ def clean_dir(d):
         old.unlink()
 
 
+DOC_NAME = "LISEZMOI_animations.md"
+DOC_HEADER = """# Animations du modèle de voiture à 4 DDL — choix de représentation
+
+Document généré automatiquement par `make_animations.py` : les valeurs ci-dessous
+correspondent exactement aux vidéos du dossier. Ne pas le modifier à la main
+(il est réécrit à chaque génération).
+
+**Commun à toutes les animations**
+
+- Le dessin est un schéma : longueurs horizontales à l'échelle (empattement L = 4 m,
+  roues à ±2 m du centre de gravité), hauteurs des blocs et ressorts arbitraires.
+- Les déplacements verticaux réels (mm, cm) seraient invisibles : ils sont **amplifiés**
+  d'un facteur indiqué pour chaque animation. « Amplifié ×N » signifie qu'un
+  déplacement réel de 1 cm est dessiné comme N cm (à la même échelle que l'empattement).
+- Rectangles en pointillés : position d'équilibre. Flèches ↕ : déplacements imposés
+  par la route x01 (roue 1, arrière, à gauche) et x02 (roue 2, avant, à droite).
+- Pneus : ressort k et amortisseur b ; suspensions : ressort K0 et amortisseur B0.
+- Aucun texte sur les images : les informations sont dans les noms de fichiers.
+"""
+
+
+def update_doc(outdir, key, title, body):
+    """Remplace (ou ajoute) la section `key` du document, sans toucher aux autres."""
+    doc = outdir / DOC_NAME
+    text = doc.read_text(encoding="utf-8") if doc.exists() else DOC_HEADER
+    begin, end = f"<!-- debut:{key} -->", f"<!-- fin:{key} -->"
+    block = f"{begin}\n## {title}\n\n{body.strip()}\n{end}"
+    if begin in text:
+        text = text[:text.index(begin)] + block + text[text.index(end) + len(end):]
+    else:
+        text = text.rstrip() + "\n\n" + block + "\n"
+    # sections toujours dans l'ordre 1, 2, 3
+    parts = {k: text[text.index(f"<!-- debut:{k} -->"):text.index(f"<!-- fin:{k} -->") + len(f"<!-- fin:{k} -->")]
+             for k in ("modes", "transmissibilite", "temps") if f"<!-- debut:{k} -->" in text}
+    text = DOC_HEADER.rstrip() + "\n\n" + "\n\n".join(parts.values()) + "\n"
+    doc.write_text(text, encoding="utf-8")
+    print("écrit :", doc)
+
+
+def _fmt_len(m):
+    """Longueur en m -> texte lisible (mm ou cm)."""
+    return f"{m * 1e3:.2f} mm" if abs(m) < 0.01 else f"{m * 1e2:.2f} cm"
+
+
 def _save(anim, path, fps, gif):
     path.parent.mkdir(parents=True, exist_ok=True)
     anim.save(path, writer=animation.FFMpegWriter(fps=fps, bitrate=2400))
@@ -234,8 +279,9 @@ def _upward(phi):
 # ----------------------------------------------------------------------------
 # 1. Modes propres
 # ----------------------------------------------------------------------------
-def animate_mode(phi, freq, num, out, fps=30, periods=2, frames_per_period=60, gif=False):
+def animate_mode(phi, freq, num, out, fps=30, periods=2, gif=False):
     """Mode propre phi (4,) animé en phi*sin(wt) ; route immobile. Boucle parfaite."""
+    frames_per_period = round(PERIOD_ON_SCREEN * fps)
     phi = _upward(np.real(phi) * display_scale(np.real(phi)))
     fig, ax = plt.subplots(figsize=(8, 5.3), dpi=150)
     car = CarDrawing(ax, labels=LABELS)
@@ -269,13 +315,14 @@ def overview(psi, freqs, outdir):
 ROAD_AMP = 0.22            # amplitude dessinée de la route en harmonique
 
 
-def animate_harmonic(X, X0, out, fps=30, periods=2, frames_per_period=60, gif=False):
+def animate_harmonic(X, X0, out, fps=30, periods=2, gif=False):
     """
     X  : (4,) réponse complexe [X1, X2, X3, Q3] pour l'entrée X0 (2,) complexe.
     Animation de Re(X e^{iwt}) et Re(X0 e^{iwt}) sur un nombre entier de périodes (boucle parfaite).
     La route et la voiture ont chacune leur facteur d'amplification graphique :
     renvoie le rapport (route / voiture), à indiquer dans le nom du fichier.
     """
+    frames_per_period = round(PERIOD_ON_SCREEN * fps)
     X, X0 = np.asarray(X), np.asarray(X0)
     s_car = display_scale(X)
     s_road = ROAD_AMP / np.max(np.abs(X0))
@@ -291,7 +338,7 @@ def animate_harmonic(X, X0, out, fps=30, periods=2, frames_per_period=60, gif=Fa
     fig.tight_layout()
     _save(anim, out, fps, gif)
     plt.close(fig)
-    return s_road / s_car
+    return s_car, s_road
 
 
 # ----------------------------------------------------------------------------
@@ -377,9 +424,33 @@ def make_modes(outdir, fps, gif):
     d = outdir / "1_modes"
     clean_dir(d)
     overview(psi, freqs, d)
+    body = [
+        "Fichiers `mode<n>_<type>_f<fréquence>Hz.mp4` : vibration libre dans le mode n, "
+        "en boucle (2 périodes, raccord parfait). La route est immobile.",
+        "",
+        "- Un mode propre n'a pas d'amplitude physique (vecteur propre défini à une constante "
+        "près) : chaque mode est mis à l'échelle pour que son plus grand déplacement soit bien "
+        "visible. Seules les **proportions entre DDL** ont un sens ; elles sont données ci-dessous.",
+        "- Signe arbitraire : le plus grand déplacement part vers le haut.",
+        f"- Une période dure {PERIOD_ON_SCREEN:g} s à l'écran : l'animation est **ralentie** "
+        "(facteur ci-dessous).",
+        f"- Aperçu statique : `modes_apercu_...png/.svg`, position extrême de chaque mode "
+        "(ordre : 1 en haut à gauche, 2 en haut à droite, 3 en bas à gauche, 4 en bas à droite).",
+        "",
+        "| Fichier | f [Hz] | Ralenti | x1 | x2 | caisse au-dessus roue 1 | caisse au-dessus roue 2 |",
+        "|---|---|---|---|---|---|---|",
+    ]
     for i in range(psi.shape[1]):
         name = f"mode{i + 1}_{slug(mode_name(psi[:, i]))}_f{freqs[i]:.2f}Hz.mp4"
         animate_mode(psi[:, i], freqs[i], i + 1, d / name, fps=fps, gif=gif)
+        x1, x2, x3, q3 = _upward(psi[:, i] / np.max(np.abs(psi[:, i])))
+        pts = np.array([x1, x2, x3 - XW * q3, x3 + XW * q3])
+        pts = pts / np.max(np.abs(pts))
+        body.append(f"| `{name}` | {freqs[i]:.2f} | ×{PERIOD_ON_SCREEN * freqs[i]:.1f} | "
+                    + " | ".join(f"{p:+.2f}" for p in pts) + " |")
+    body += ["", "Proportions normalisées : 1,00 = plus grand déplacement du mode ; "
+             "signe opposé = mouvement en opposition de phase."]
+    update_doc(outdir, "modes", "1_modes — modes propres", "\n".join(body))
 
 
 def make_transmissibility(outdir, fps, gif):
@@ -389,20 +460,53 @@ def make_transmissibility(outdir, fps, gif):
     clean_dir(d)
     cases = [
         # (réponse, entrée [X01, X02], mode de la 1re résonance, préfixe, gain affiché dans le nom)
-        (r["X_sym"], [1, 1], 0, "X3-sur-X01_X01=X02", lambda X: f"gain{abs(X[2]):.3g}"),
-        (r["X_anti"], [1, -1], 1, "q3-sur-X01_X01=-X02", lambda X: f"gain{abs(X[3]):.3g}rad-par-m"),
+        (r["X_sym"], [1, 1], 0, "X01=X02_symetrique_X3-sur-X01", lambda X: f"gain{abs(X[2]):.3g}"),
+        (r["X_anti"], [1, -1], 1, "X01=-X02_antisymetrique_q3-sur-X01", lambda X: f"gain{abs(X[3]):.3g}rad-par-m"),
+    ]
+    body = [
+        "Fichiers `<cas>_<transmissibilité>_f<fréquence>Hz_gain<valeur>_route-dessinee-x<N>.mp4` : "
+        "réponse harmonique établie du **modèle complet** (force non simplifiée), en boucle "
+        "(2 périodes, raccord parfait).",
+        "",
+        "- Fréquence : la valeur de la grille `f` du notebook juste en dessous de la première "
+        "résonance de la courbe (la résonance exacte n'est pas sur la grille).",
+        "- `gain` = |X3/X01| (cas symétrique) ou |q3/X01| en rad/m (cas antisymétrique) à cette fréquence.",
+        "- Route et voiture n'ont **pas la même amplification** : sinon, la route serait invisible "
+        "à côté de la caisse. `route-dessinee-xN` : la route est dessinée N fois plus grande "
+        "que si elle avait l'échelle de la voiture.",
+        f"- Une période dure {PERIOD_ON_SCREEN:g} s à l'écran (ralenti indiqué ci-dessous).",
+        "",
     ]
     for Xall, X0, mode, prefix, gain in cases:
         # fréquence de la grille f la plus proche de la résonance, par en dessous
         n = max(np.searchsorted(f, freqs[mode], side="right") - 1, 0)
         X = Xall[:, n]
         tmp = d / "_en_cours.mp4"
-        ratio = animate_harmonic(X, np.array(X0, dtype=complex), tmp, fps=fps, gif=gif)
+        s_car, s_road = animate_harmonic(X, np.array(X0, dtype=complex), tmp, fps=fps, gif=gif)
+        ratio = s_road / s_car
         name = f"{prefix}_f{f[n]:.2f}Hz_{gain(X)}_route-dessinee-x{ratio:.0f}"
+        a = np.abs(X)
+        body += [
+            f"### `{name}.mp4`",
+            "",
+            "- Excitation : " + ("X01 = X02 (même déplacement sous les deux roues)" if X0[1] == 1
+                                  else "X01 = −X02 (roues excitées en opposition de phase)")
+            + f", f = {f[n]:.3f} Hz "
+            f"(résonance du mode {mode + 1} : {freqs[mode]:.3f} Hz) ; ralenti ×{PERIOD_ON_SCREEN * f[n]:.1f}.",
+            f"- Pour 1 mm d'amplitude de route : roue 1 {a[0]:.2f} mm, roue 2 {a[1]:.2f} mm, "
+            f"caisse {a[2]:.2f} mm, rotation {np.degrees(a[3]) * 1e-3:.3g}° "
+            f"(soit {a[3] * XW:.2f} mm aux points d'attache).",
+            f"- La réponse est linéaire : l'amplitude de la route est arbitraire, seules comptent "
+            f"les proportions ci-dessus. À l'écran, la route est dessinée {ratio:.0f} fois plus grande "
+            f"qu'à l'échelle de la voiture.",
+            "",
+        ]
         for ext in (".mp4", ".gif"):
             if tmp.with_suffix(ext).exists():
                 tmp.with_suffix(ext).replace(d / (name + ext))
                 print("renommé :", d / (name + ext))
+    update_doc(outdir, "transmissibilite", "2_transmissibilite — réponse harmonique près de la 1re résonance",
+               "\n".join(body))
 
 
 def make_time(outdir, fps, gif, speed):
@@ -412,6 +516,28 @@ def make_time(outdir, fps, gif, speed):
     clean_dir(d)
     x0 = np.vstack([r["x_01"], r["x_02"]])
     lecture = "temps-reel" if speed == 1 else (f"ralenti-x{1 / speed:g}" if speed < 1 else f"accelere-x{speed:g}")
+    body = [
+        "Fichiers `reponse-route_v<vitesse>ms_<lecture>_deplacements-x<N>_duree<T>s.mp4` : "
+        "réponse temporelle calculée dans le notebook (convolution dans la base modale) "
+        "sur le profil `w_road`, une vidéo par vitesse.",
+        "",
+        "- Lecture : " + ("temps réel" if speed == 1 else
+                          (f"ralentie ×{1 / speed:g}" if speed < 1 else f"accélérée ×{speed:g}"))
+        + " (option `--speed` du script).",
+        "- Voiture **et** route sont amplifiées du **même** facteur N (`deplacements-xN`) : "
+        "les rapports d'amplitude entre route, roues et caisse sont respectés. N est choisi "
+        "pour que le plus grand déplacement de la vidéo soit bien visible, il change donc "
+        "avec la vitesse : comparer les vidéos entre elles se fait avec les valeurs ci-dessous, "
+        "pas à l'œil.",
+        "- Panneau du bas : profil `w_road` réel (non amplifié par rapport à lui-même, axe vertical "
+        "en mm, de "
+        f"{w_road.min() * 1e3:.1f} à {w_road.max() * 1e3:.1f} mm) sur ±3,6 m autour du centre de la voiture ; "
+        "il défile à la vitesse du véhicule (marche vers la droite). Les points marquent le contact "
+        "des roues, les traits pointillés sont alignés sous les roues du dessin.",
+        "",
+        "| Fichier | v [m/s] | Amplification | max roue 1 | max roue 2 | max caisse x3 | max rotation q3 | max route |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for s, vs in enumerate(v):
         ts = r["t"][s, :N]
         tmp = d / "_en_cours.mp4"
@@ -422,6 +548,10 @@ def make_time(outdir, fps, gif, speed):
             if tmp.with_suffix(ext).exists():
                 tmp.with_suffix(ext).replace(d / (name + ext))
                 print("renommé :", d / (name + ext))
+        m = np.max(np.abs(r["X_t"][s]), axis=1)
+        body.append(f"| `{name}.mp4` | {vs:g} | ×{amp:.0f} | {_fmt_len(m[0])} | {_fmt_len(m[1])} | "
+                    f"{_fmt_len(m[2])} | {np.degrees(m[3]):.3f}° | {_fmt_len(np.max(np.abs(x0)))} |")
+    update_doc(outdir, "temps", "3_reponse_temporelle — réponse au profil de route", "\n".join(body))
 
 
 if __name__ == "__main__":
