@@ -5,14 +5,17 @@ Ce script ne calcule rien : toutes les grandeurs physiques sont lues dans
 project.ipynb (via load_notebook.py). Il ne fait que dessiner.
 
 Usage (depuis la racine du dépôt) :
-    uv run python Project2627/presentation/make_animations.py              # tout
-    uv run python Project2627/presentation/make_animations.py modes        # une partie
-    uv run python Project2627/presentation/make_animations.py temps --speed 0.5
+    uv run --with imageio-ffmpeg python Project2627/presentation/make_animations.py
+    uv run --with imageio-ffmpeg python Project2627/presentation/make_animations.py modes
+    uv run --with imageio-ffmpeg python Project2627/presentation/make_animations.py temps --speed 0.5
+  (--with imageio-ffmpeg fournit ffmpeg, nécessaire pour les MP4, sans rien installer
+   sur le système ; --etiquettes ajoute les symboles m1, m2, M0, x01, x02)
 
-Sorties dans Project2627/presentation/figures/ :
-    1_modes/                mode_1.mp4 ... mode_4.mp4, modes_overview.png/.svg
-    2_transmissibilite/     X3_sur_X01_symetrique.mp4, q3_sur_X01_antisymetrique.mp4
-    3_reponse_temporelle/   reponse_v05.mp4, reponse_v10.mp4, reponse_v30.mp4
+Aucun texte n'est écrit sur les animations : les informations sont dans les noms.
+Sorties dans Project2627/presentation/figures/ (chaque dossier est vidé puis régénéré) :
+    1_modes/                mode1_pompage-de-la-caisse_f1.15Hz.mp4, ..., modes_apercu_*.png/.svg
+    2_transmissibilite/     X3-sur-X01_X01=X02_f1.10Hz_gain11.8_route-dessinee-x6.mp4, ...
+    3_reponse_temporelle/   reponse-route_v05ms_temps-reel_deplacements-x7_duree40s.mp4, ...
 
 Variables lues dans le notebook :
     modes             psi, freq_nat
@@ -27,6 +30,8 @@ devant (x_02 = w_road décalé de L).
 """
 
 import argparse
+import shutil
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +70,7 @@ WHEEL_W, WHEEL_H = 0.7, 0.4
 Y_BODY = 2.85              # centre de la caisse
 BODY_W, BODY_H = 5.6, 0.7
 AMP = 0.4                  # déplacement maximal dessiné
+LABELS = False             # aucun texte sur les animations (option --etiquettes pour les symboles)
 
 
 def mode_name(phi):
@@ -108,8 +114,9 @@ def dashpot_xy(x, y0, y1, w=0.11):
 class CarDrawing:
     """Dessine la voiture sur un axe ; update(x, x0) la place dans un état donné."""
 
-    def __init__(self, ax, ghost=True):
+    def __init__(self, ax, ghost=True, labels=False):
         self.ax = ax
+        self.labels = labels
         ax.set_xlim(-3.6, 3.6)
         ax.set_ylim(-0.75, 4.0)
         ax.set_aspect("equal")
@@ -145,12 +152,16 @@ class CarDrawing:
         # flèches ↕ des déplacements imposés par la route (côté intérieur)
         self.road_arrow = [ax.add_patch(FancyArrowPatch((0, 0), (0, 1), arrowstyle="<|-|>", mutation_scale=10,
                                                         color=ROYAL, lw=1.3, zorder=4)) for _ in range(2)]
-        lab = dict(color=ROYAL, fontsize=12, va="center", zorder=4)
-        self.road_lab = [ax.text(0, 0, "$x_{01}$", ha="left", **lab),
-                         ax.text(0, 0, "$x_{02}$", ha="right", **lab)]
-        self.wlab = [ax.text(0, 0, t, ha=ha, va="center", color=GREY, fontsize=12, zorder=4)
-                     for t, ha in (("$m_1$", "right"), ("$m_2$", "left"))]
-        self.blab = ax.text(0, 0, "$M_0,\\ I_G$", ha="left", va="center", color="white", fontsize=12, zorder=4)
+        # étiquettes des symboles (désactivées par défaut : aucun texte sur les animations)
+        self.road_lab, self.wlab, self.blab = [], [], None
+        if labels:
+            lab = dict(color=ROYAL, fontsize=12, va="center", zorder=4)
+            self.road_lab = [ax.text(0, 0, "$x_{01}$", ha="left", **lab),
+                             ax.text(0, 0, "$x_{02}$", ha="right", **lab)]
+            self.wlab = [ax.text(0, 0, t, ha=ha, va="center", color=GREY, fontsize=12, zorder=4)
+                         for t, ha in (("$m_1$", "right"), ("$m_2$", "left"))]
+            self.blab = ax.text(0, 0, "$M_0,\\ I_G$", ha="left", va="center", color="white", fontsize=12,
+                                zorder=4)
         self.update(np.zeros(4))
 
     def update(self, x, x0=(0.0, 0.0)):
@@ -159,8 +170,9 @@ class CarDrawing:
         tr = Affine2D().rotate(q3).translate(0, yb)
         self.body.set_transform(tr + self.ax.transData)
         self.cg.center = (0, yb)
-        self.blab.set_position(tr.transform((0.3, 0)))
-        self.blab.set_rotation(np.degrees(q3))
+        if self.blab is not None:
+            self.blab.set_position(tr.transform((0.3, 0)))
+            self.blab.set_rotation(np.degrees(q3))
 
         for i, (xw, xi, x0i) in enumerate(((-XW, x1, x0[0]), (XW, x2, x0[1]))):
             side = 1 if i == 0 else -1                        # +1 : intérieur vers la droite
@@ -168,9 +180,10 @@ class CarDrawing:
             yw = Y_WHEEL + xi
             self.road[i].set_xy((xw - ROAD_W / 2, yr - ROAD_H))
             self.road_arrow[i].set_positions((xw + side * 0.75, yr - 0.32), (xw + side * 0.75, yr + 0.32))
-            self.road_lab[i].set_position((xw + side * 0.9, yr))
+            if self.labels:
+                self.road_lab[i].set_position((xw + side * 0.9, yr))
+                self.wlab[i].set_position((xw - side * 0.5, yw))
             self.wheels[i].set_xy((xw - WHEEL_W / 2, yw - WHEEL_H / 2))
-            self.wlab[i].set_position((xw - side * 0.5, yw))
 
             # pneu : route -> roue (raideur k, amortissement b)
             ybot = yw - WHEEL_H / 2
@@ -189,13 +202,47 @@ class CarDrawing:
 
         return [*self.tire_k, *[l for d in self.tire_b for l in d], *self.susp_k,
                 *[l for d in self.susp_b for l in d], *self.road, *self.road_arrow, *self.road_lab,
-                *self.wheels, self.body, self.cg, self.blab, *self.wlab]
+                *self.wheels, self.body, self.cg, *([self.blab] if self.blab else []), *self.wlab]
+
+
+def find_ffmpeg():
+    """ffmpeg du système s'il existe, sinon celui fourni par le paquet imageio-ffmpeg, sinon None."""
+    exe = shutil.which(plt.rcParams["animation.ffmpeg_path"]) or shutil.which("ffmpeg")
+    if exe is None:
+        try:
+            import imageio_ffmpeg
+            exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+    plt.rcParams["animation.ffmpeg_path"] = exe
+    return exe
+
+
+FFMPEG = find_ffmpeg()
+
+
+def slug(text):
+    """Texte -> morceau de nom de fichier sans accents ni espaces."""
+    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return "-".join(t.lower().split())
+
+
+def clean_dir(d):
+    """Vide un dossier de sortie des anciennes animations (les noms contiennent des valeurs)."""
+    d.mkdir(parents=True, exist_ok=True)
+    for old in [*d.glob("*.mp4"), *d.glob("*.gif"), *d.glob("*.png"), *d.glob("*.svg")]:
+        old.unlink()
 
 
 def _save(anim, path, fps, gif):
     path.parent.mkdir(parents=True, exist_ok=True)
-    anim.save(path, writer=animation.FFMpegWriter(fps=fps, bitrate=2400))
-    print("écrit :", path)
+    if FFMPEG is None:
+        gif = True
+        print("ffmpeg introuvable : export en GIF uniquement "
+              "(lancer avec  uv run --with imageio-ffmpeg ...  pour avoir les MP4)")
+    else:
+        anim.save(path, writer=animation.FFMpegWriter(fps=fps, bitrate=2400))
+        print("écrit :", path)
     if gif:
         g = path.with_suffix(".gif")
         anim.save(g, writer=animation.PillowWriter(fps=fps), dpi=90)
@@ -214,8 +261,7 @@ def animate_mode(phi, freq, num, out, fps=30, periods=2, frames_per_period=60, g
     """Mode propre phi (4,) animé en phi*sin(wt) ; route immobile. Boucle parfaite."""
     phi = _upward(np.real(phi) * display_scale(np.real(phi)))
     fig, ax = plt.subplots(figsize=(8, 5.3), dpi=150)
-    car = CarDrawing(ax)
-    ax.set_title(f"Mode {num} — {mode_name(phi)}  ($f_{num}$ = {freq:.2f} Hz)", loc="left")
+    car = CarDrawing(ax, labels=LABELS)
     th = np.linspace(0, periods * 2 * np.pi, periods * frames_per_period, endpoint=False)
     anim = animation.FuncAnimation(fig, lambda j: car.update(phi * np.sin(th[j])),
                                    frames=len(th), interval=1000 / fps, blit=True)
@@ -229,12 +275,12 @@ def overview(psi, freqs, outdir):
     fig, axs = plt.subplots(2, 2, figsize=(12, 8), dpi=200)
     for i, ax in enumerate(axs.flat):
         phi = _upward(np.real(psi[:, i]) * display_scale(np.real(psi[:, i])))
-        CarDrawing(ax).update(phi)
-        ax.set_title(f"Mode {i + 1} — {mode_name(phi)}\n$f_{i + 1}$ = {freqs[i]:.2f} Hz", loc="left", fontsize=13)
+        CarDrawing(ax, labels=LABELS).update(phi)
     fig.tight_layout()
     outdir.mkdir(parents=True, exist_ok=True)
+    fs = "_".join(f"{fi:.2f}" for fi in freqs)
     for ext in ("png", "svg"):
-        p = outdir / f"modes_overview.{ext}"
+        p = outdir / f"modes_apercu_1-2-3-4_f{fs}Hz.{ext}"
         fig.savefig(p, facecolor="white")
         print("écrit :", p)
     plt.close(fig)
@@ -246,22 +292,18 @@ def overview(psi, freqs, outdir):
 ROAD_AMP = 0.22            # amplitude dessinée de la route en harmonique
 
 
-def animate_harmonic(X, X0, f_exc, out, title, ratio_txt, fps=30, periods=2, frames_per_period=60, gif=False):
+def animate_harmonic(X, X0, out, fps=30, periods=2, frames_per_period=60, gif=False):
     """
     X  : (4,) réponse complexe [X1, X2, X3, Q3] pour l'entrée X0 (2,) complexe.
     Animation de Re(X e^{iwt}) et Re(X0 e^{iwt}) sur un nombre entier de périodes (boucle parfaite).
-    La route et la voiture ont chacune leur facteur d'amplification graphique, indiqué sur l'image.
+    La route et la voiture ont chacune leur facteur d'amplification graphique :
+    renvoie le rapport (route / voiture), à indiquer dans le nom du fichier.
     """
     X, X0 = np.asarray(X), np.asarray(X0)
     s_car = display_scale(X)
     s_road = ROAD_AMP / np.max(np.abs(X0))
     fig, ax = plt.subplots(figsize=(8, 5.3), dpi=150)
-    car = CarDrawing(ax)
-    ax.set_title(title, loc="left")
-    ax.text(-3.55, 3.85, ratio_txt, ha="left", va="top", color=ROYAL, fontsize=12)
-    if s_road / s_car > 1.5:
-        ax.text(3.55, 3.85, f"échelles différentes :\nroute dessinée ×{s_road / s_car:.0f}",
-                ha="right", va="top", color=GREY, fontsize=10, style="italic")
+    car = CarDrawing(ax, labels=LABELS)
     th = np.linspace(0, periods * 2 * np.pi, periods * frames_per_period, endpoint=False)
 
     def frame(j):
@@ -272,12 +314,13 @@ def animate_harmonic(X, X0, f_exc, out, title, ratio_txt, fps=30, periods=2, fra
     fig.tight_layout()
     _save(anim, out, fps, gif)
     plt.close(fig)
+    return s_road / s_car
 
 
 # ----------------------------------------------------------------------------
 # 3. Réponse temporelle sur le profil de route
 # ----------------------------------------------------------------------------
-def animate_response(t, x, x0, out, title="Réponse à la route", fps=30, speed=1.0, gif=False,
+def animate_response(t, x, x0, out, fps=30, speed=1.0, gif=False,
                      pos=None, road_x=None, road_w=None):
     """
     Réponse temporelle déjà calculée (dans le notebook).
@@ -299,10 +342,8 @@ def animate_response(t, x, x0, out, title="Réponse à la route", fps=30, speed=
         axr = fig.add_subplot(gs[1])
     else:
         fig, ax = plt.subplots(figsize=(8, 5.3), dpi=150)
-    car = CarDrawing(ax)
-    ax.set_title(title, loc="left")
-    clock = ax.text(3.55, 3.95, "", ha="right", va="top", color=GREY, fontsize=11)
-    artists = [clock]
+    car = CarDrawing(ax, labels=LABELS)
+    artists = []
 
     if with_road:
         road_x, road_w = np.asarray(road_x), 1e3 * np.asarray(road_w)       # mm
@@ -317,16 +358,18 @@ def animate_response(t, x, x0, out, title="Réponse à la route", fps=30, speed=
         for sp in ("left", "bottom"):
             axr.spines[sp].set_color(GREY)
         axr.tick_params(colors=GREY, labelsize=9)
-        axr.set_ylabel("$w_{road}$ [mm]", color=GREY, fontsize=10)
-        axr.set_xlabel("Position par rapport au centre de la voiture [m]  —  sens de marche →",
-                       color=GREY, fontsize=10)
+        if LABELS:
+            axr.set_ylabel("$w_{road}$ [mm]", color=GREY, fontsize=10)
+            axr.set_xlabel("Position par rapport au centre de la voiture [m]  —  sens de marche →",
+                           color=GREY, fontsize=10)
+        else:
+            axr.tick_params(labelleft=False, labelbottom=False)
         prof, = axr.plot([], [], color=NAVY, lw=1.4, zorder=2)
         contact, = axr.plot([], [], "o", ms=6, color=ROYAL, zorder=3)
         artists += [prof, contact]
 
     def frame(j):
         k = frames[j]
-        clock.set_text(f"t = {t[k]:.2f} s")
         out_art = car.update(s * x[:, k], s * x0[:, k])
         if with_road:
             centre = pos[k] + XW                               # roue 1 en -L/2, roue 2 en +L/2
@@ -339,12 +382,13 @@ def animate_response(t, x, x0, out, title="Réponse à la route", fps=30, speed=
     if not with_road:
         fig.tight_layout()
     else:
-        fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.08)
+        fig.subplots_adjust(left=0.08, right=0.98, top=0.98, bottom=0.08 if LABELS else 0.03)
         fig.canvas.draw()                      # aligne le profil sous la voiture (même échelle en x)
         p, q = ax.get_position(), axr.get_position()
         axr.set_position([p.x0, q.y0, p.width, q.height])
     _save(anim, out, fps, gif)
     plt.close(fig)
+    return s
 
 
 # ----------------------------------------------------------------------------
@@ -354,41 +398,53 @@ def make_modes(outdir, fps, gif):
     r = load_results("psi", "freq_nat")
     psi, freqs = np.real(r["psi"]), np.abs(r["freq_nat"])
     d = outdir / "1_modes"
+    clean_dir(d)
     overview(psi, freqs, d)
     for i in range(psi.shape[1]):
-        animate_mode(psi[:, i], freqs[i], i + 1, d / f"mode_{i + 1}.mp4", fps=fps, gif=gif)
+        name = f"mode{i + 1}_{slug(mode_name(psi[:, i]))}_f{freqs[i]:.2f}Hz.mp4"
+        animate_mode(psi[:, i], freqs[i], i + 1, d / name, fps=fps, gif=gif)
 
 
 def make_transmissibility(outdir, fps, gif):
     r = load_results("f", "X_sym", "X_anti", "freq_nat")
     f, freqs = np.asarray(r["f"]), np.abs(r["freq_nat"])
     d = outdir / "2_transmissibilite"
+    clean_dir(d)
     cases = [
-        # (réponse, entrée [X01, X02], mode de la 1re résonance, nom, titre, rapport affiché)
-        (r["X_sym"], [1, 1], 0, "X3_sur_X01_symetrique",
-         "Transmissibilité $X_3/X_{01}$  ($X_{01} = X_{02}$)", lambda X: f"$|X_3/X_{{01}}|$ = {abs(X[2]):.3g}"),
-        (r["X_anti"], [1, -1], 1, "q3_sur_X01_antisymetrique",
-         "Transmissibilité $q_3/X_{01}$  ($X_{01} = -X_{02}$)", lambda X: f"$|q_3/X_{{01}}|$ = {abs(X[3]):.3g} rad/m"),
+        # (réponse, entrée [X01, X02], mode de la 1re résonance, préfixe, gain affiché dans le nom)
+        (r["X_sym"], [1, 1], 0, "X3-sur-X01_X01=X02", lambda X: f"gain{abs(X[2]):.3g}"),
+        (r["X_anti"], [1, -1], 1, "q3-sur-X01_X01=-X02", lambda X: f"gain{abs(X[3]):.3g}rad-par-m"),
     ]
-    for Xall, X0, mode, name, title, ratio in cases:
+    for Xall, X0, mode, prefix, gain in cases:
         # fréquence de la grille f la plus proche de la résonance, par en dessous
         n = max(np.searchsorted(f, freqs[mode], side="right") - 1, 0)
         X = Xall[:, n]
-        print(f"{name}: résonance {freqs[mode]:.3f} Hz -> f[{n}] = {f[n]:.3f} Hz")
-        animate_harmonic(X, np.array(X0, dtype=complex), f[n], d / f"{name}.mp4",
-                         title=f"{title}, f = {f[n]:.2f} Hz", ratio_txt=ratio(X), fps=fps, gif=gif)
+        tmp = d / "_en_cours.mp4"
+        ratio = animate_harmonic(X, np.array(X0, dtype=complex), tmp, fps=fps, gif=gif)
+        name = f"{prefix}_f{f[n]:.2f}Hz_{gain(X)}_route-dessinee-x{ratio:.0f}"
+        for ext in (".mp4", ".gif"):
+            if tmp.with_suffix(ext).exists():
+                tmp.with_suffix(ext).replace(d / (name + ext))
+                print("renommé :", d / (name + ext))
 
 
 def make_time(outdir, fps, gif, speed):
     r = load_results("X_t", "t", "N", "v", "x_01", "x_02", "x", "w_road")
     N, v, x_road, w_road = r["N"], np.ravel(r["v"]), np.asarray(r["x"]), np.asarray(r["w_road"])
     d = outdir / "3_reponse_temporelle"
+    clean_dir(d)
+    x0 = np.vstack([r["x_01"], r["x_02"]])
+    lecture = "temps-reel" if speed == 1 else (f"ralenti-x{1 / speed:g}" if speed < 1 else f"accelere-x{speed:g}")
     for s, vs in enumerate(v):
         ts = r["t"][s, :N]
-        x0 = np.vstack([r["x_01"], r["x_02"]])
-        animate_response(ts, r["X_t"][s], x0, d / f"reponse_v{vs:02.0f}.mp4",
-                         title=f"Réponse à la route — v = {vs:g} m/s", fps=fps, speed=speed, gif=gif,
-                         pos=x_road[:N], road_x=x_road, road_w=w_road)
+        tmp = d / "_en_cours.mp4"
+        amp = animate_response(ts, r["X_t"][s], x0, tmp, fps=fps, speed=speed, gif=gif,
+                               pos=x_road[:N], road_x=x_road, road_w=w_road)
+        name = f"reponse-route_v{vs:02.0f}ms_{lecture}_deplacements-x{amp:.0f}_duree{(ts[-1] - ts[0]) / speed:.0f}s"
+        for ext in (".mp4", ".gif"):
+            if tmp.with_suffix(ext).exists():
+                tmp.with_suffix(ext).replace(d / (name + ext))
+                print("renommé :", d / (name + ext))
 
 
 if __name__ == "__main__":
@@ -401,7 +457,10 @@ if __name__ == "__main__":
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--speed", type=float, default=1.0, help="vitesse de lecture des réponses temporelles")
     ap.add_argument("--outdir", type=Path, default=Path(__file__).parent / "figures")
+    ap.add_argument("--etiquettes", action="store_true",
+                    help="ajouter les symboles (m1, m2, M0, x01, x02) et les axes du profil de route")
     a = ap.parse_args()
+    LABELS = a.etiquettes
     todo = a.parties or ["modes", "transmissibilite", "temps"]
 
     if "modes" in todo:
